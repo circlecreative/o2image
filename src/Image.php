@@ -36,7 +36,7 @@ namespace O2System
 		);
 
 		protected $_config = array(
-			'driver'           => 'gd',
+			'driver'           => 'gd2',
 			'file_permissions' => 0664,
 			'quality'          => 90,
 			'maintain_ratio'   => TRUE,
@@ -64,14 +64,9 @@ namespace O2System
 				throw new Exception( 'Invalid Image Library Driver' );
 			}
 
-			if ( class_exists( 'O2System' ) )
+			if ( isset( $this->_config[ 'source' ] ) )
 			{
-				$this->_config[ 'cache_path' ] = \O2System::$config[ 'cache' ][ 'path' ] . 'images' . DIRECTORY_SEPARATOR;
-			}
-
-			if ( empty( $this->_config[ 'cache_path' ] ) )
-			{
-				throw new Exception( 'Required Cache Path for Image Pre-processing' );
+				$this->set_source( $this->_config[ 'source' ] );
 			}
 
 			$this->_handle = new \CodeIgniter\Image();
@@ -79,24 +74,32 @@ namespace O2System
 
 		protected function _set_cache( $cache )
 		{
-			$this->_cache = new \ArrayObject( pathinfo( $cache ), \ArrayObject::ARRAY_AS_PROPS );
-			$this->_cache[ 'realpath' ] = $cache;
+			$cache = $this->_source->dirname . DIRECTORY_SEPARATOR . $cache;
 
-			if ( $dimension = getimagesize( $cache ) )
+			if ( is_file( $cache ) )
 			{
-				$this->_cache[ 'mime' ] = $dimension[ 'mime' ];
-				$this->_cache[ 'dimension' ] = new \ArrayObject( array(
-					                                                 'width'     => $dimension[ 0 ],
-					                                                 'height'    => $dimension[ 1 ],
-					                                                 'attribute' => $dimension[ 3 ],
-				                                                 ), \ArrayObject::ARRAY_AS_PROPS );
+				$this->_cache = new \ArrayObject( pathinfo( $cache ), \ArrayObject::ARRAY_AS_PROPS );
+				$this->_cache[ 'realpath' ] = $cache;
 
+				if ( $dimension = getimagesize( $cache ) )
+				{
+					$this->_cache[ 'mime' ] = $dimension[ 'mime' ];
+					$this->_cache[ 'dimension' ] = new \ArrayObject( array(
+						                                                 'width'     => $dimension[ 0 ],
+						                                                 'height'    => $dimension[ 1 ],
+						                                                 'attribute' => $dimension[ 3 ],
+					                                                 ), \ArrayObject::ARRAY_AS_PROPS );
+
+					return TRUE;
+				}
 			}
+
+			throw new Exception( 'Invalid cache image: ' . $cache );
 		}
 
 		public function set_source( $source, $target = NULL )
 		{
-			if ( file_exists( $source ) )
+			if ( is_file( $source ) )
 			{
 				$this->_config[ 'source' ] = $source;
 				$this->_source = new \ArrayObject( pathinfo( $source ), \ArrayObject::ARRAY_AS_PROPS );
@@ -115,7 +118,7 @@ namespace O2System
 
 				if ( isset( $target ) )
 				{
-					$this->_config[ 'target' ] = $target;
+					$this->set_target( $target );
 				}
 
 				return $this;
@@ -126,7 +129,32 @@ namespace O2System
 
 		public function set_target( $target )
 		{
-			$this->_config[ 'target' ] = $target;
+			$filenames = array(
+				$this->_source->dirname . DIRECTORY_SEPARATOR . pathinfo( $target, PATHINFO_FILENAME ) . '.' . $this->_source->extension,
+				pathinfo( $target, PATHINFO_DIRNAME ) . DIRECTORY_SEPARATOR . pathinfo( $target, PATHINFO_FILENAME ) . '.' . $this->_source->extension,
+			);
+
+			foreach ( $filenames as $filename )
+			{
+				$save_path = pathinfo( $filename, PATHINFO_DIRNAME );
+
+				if ( ! is_dir( $save_path ) )
+				{
+					if ( ! mkdir( $save_path, 0775, TRUE ) )
+					{
+						throw new Exception( "Configured target path '" . $save_path . "' is not a directory, doesn't exist or cannot be created." );
+					}
+				}
+				elseif ( ! is_writable( $save_path ) )
+				{
+					throw new Exception( "Configured target path '" . $save_path . "' is not writable by the PHP process." );
+				}
+				else
+				{
+					$this->_config[ 'target' ] = $filename;
+				}
+			}
+
 
 			return $this;
 		}
@@ -154,7 +182,7 @@ namespace O2System
 
 		public function set_watermark_image( $watermark, $opacity = 50, $x_transparency = 4, $y_transparency = 4 )
 		{
-			if ( file_exists( $watermark ) )
+			if ( is_file( $watermark ) )
 			{
 				$this->set_watermark( array(
 					                      'image'        => $watermark,
@@ -299,8 +327,9 @@ namespace O2System
 			$percent = intval( rtrim( $percent, '%' ) );
 
 			return $this->_calculate_size( array(
-				                               'width'  => ceil( ( $this->_source->dimension->width * $percent ) / 100 ),
-				                               'height' => ceil( ( $this->_source->dimension->height * $percent ) / 100 ),
+				                               ceil( ( $this->_source->dimension->width * $percent ) / 100 ), // width
+				                               ceil( ( $this->_source->dimension->height * $percent ) / 100 ) // height
+
 			                               ), $dimension );
 		}
 
@@ -372,6 +401,12 @@ namespace O2System
 			if ( ! empty( $this->_config[ 'crop' ] ) )
 			{
 				$crop_config = $ci_config;
+
+				if ( empty( $this->_config[ 'size' ] ) )
+				{
+					throw new Exception( 'Undefined Crop Target Size' );
+				}
+
 				$crop_config[ 'width' ] = $this->_config[ 'size' ][ 'width' ];
 				$crop_config[ 'height' ] = $this->_config[ 'size' ][ 'height' ];
 
@@ -382,7 +417,7 @@ namespace O2System
 					$crop_config[ 'y_axis' ] = $this->_config[ 'crop' ][ 'y_axis' ];
 				}
 
-				$crop_config[ 'new_image' ] = $this->_config[ 'cache_path' ] . $this->_source->basename;
+				$crop_config[ 'new_image' ] = $this->_source->filename . '-temp.' . $this->_source->extension;
 
 				$this->_handle->initialize( $crop_config );
 
@@ -404,7 +439,7 @@ namespace O2System
 				$resize_config = $ci_config;
 				$resize_config[ 'width' ] = $this->_config[ 'size' ][ 'width' ];
 				$resize_config[ 'height' ] = $this->_config[ 'size' ][ 'height' ];
-				$resize_config[ 'new_image' ] = $this->_config[ 'cache_path' ] . $this->_source->basename;
+				$resize_config[ 'new_image' ] = $this->_source->filename . '-temp.' . $this->_source->extension;
 
 				$this->_handle->initialize( $resize_config );
 
@@ -434,7 +469,7 @@ namespace O2System
 				}
 
 				$rotate_config[ 'rotation_angle' ] = $this->_config[ 'rotation' ];
-				$rotate_config[ 'new_image' ] = $this->_config[ 'cache_path' ] . $this->_source->basename;
+				$rotate_config[ 'new_image' ] = $this->_source->filename . '-temp.' . $this->_source->extension;
 
 				$this->_handle->initialize( $rotate_config );
 
@@ -456,11 +491,11 @@ namespace O2System
 			{
 				if ( isset( $this->_cache ) )
 				{
-					$watermark_config[ 'source' ] = $this->_cache->realpath;
+					$watermark_config[ 'source_image' ] = $this->_cache->realpath;
 				}
 				else
 				{
-					$watermark_config[ 'source' ] = $this->_config[ 'source' ];
+					$watermark_config[ 'source_image' ] = $this->_config[ 'source' ];
 				}
 
 				if ( isset( $this->_config[ 'watermark' ][ 'text' ] ) )
@@ -470,7 +505,7 @@ namespace O2System
 
 					if ( isset( $this->_config[ 'watermark' ][ 'font' ][ 'path' ] ) )
 					{
-						if ( file_exists( $this->_config[ 'watermark' ][ 'font' ][ 'path' ] ) )
+						if ( is_file( $this->_config[ 'watermark' ][ 'font' ][ 'path' ] ) )
 						{
 							$watermark_config[ 'wm_font_path' ] = $this->_config[ 'watermark' ][ 'font' ][ 'path' ];
 						}
@@ -489,7 +524,7 @@ namespace O2System
 					$watermark_config[ 'wm_y_transp' ] = $this->_config[ 'watermark' ][ 'transparency' ][ 'y' ];
 				}
 
-				$watermark_config[ 'new_image' ] = $this->_config[ 'cache_path' ] . $this->_source->basename;
+				$watermark_config[ 'new_image' ] = $this->_source->filename . '-temp.' . $this->_source->extension;
 
 				$this->_handle->initialize( $watermark_config );
 
@@ -523,30 +558,86 @@ namespace O2System
 
 		public function save( $target )
 		{
-			$image = fopen( $target, 'w' );
-			fwrite( $image, file_get_contents( $this->_cache->realpath ) );
-			fclose( $image );
+			if ( empty( $this->_cache ) )
+			{
+				if ( $this->render() === FALSE )
+				{
+					return FALSE;
+				}
 
-			unlink( $this->_cache->realpath );
+				if ( isset( $this->_cache ) )
+				{
+					$this->set_target( $target );
+
+					$image = fopen( $this->_config[ 'target' ], 'w' );
+					fwrite( $image, file_get_contents( $this->_cache->realpath ) );
+					fclose( $image );
+
+					unlink( $this->_cache->realpath );
+
+					return TRUE;
+				}
+			}
+
+			return FALSE;
 		}
 
 		public function string()
 		{
-			$string = file_get_contents( $this->_cache->realpath );
-			unlink( $this->_cache->realpath );
+			if ( empty( $this->_cache ) )
+			{
+				if ( $this->render() === FALSE )
+				{
+					return FALSE;
+				}
 
-			return $string;
+				if ( isset( $this->_cache ) )
+				{
+					$string = NULL;
+					ob_start();
+					readfile( $this->_cache->realpath );
+					$string = ob_get_contents();
+					ob_end_clean();
+
+					echo $string;
+					die;
+
+					return $string;
+				}
+			}
+
+			return FALSE;
 		}
 
 		public function show()
 		{
-			header( 'Content-Disposition: filename=' . $this->_cache->basename . ';' );
-			header( 'Content-Type: ' . $this->_cache->mime );
-			header( 'Content-Transfer-Encoding: binary' );
-			header( 'Last-Modified: ' . gmdate( 'D, d M Y H:i:s', time() ) . ' GMT' );
+			if ( empty( $this->_cache ) )
+			{
+				if ( $this->render() === FALSE )
+				{
+					return FALSE;
+				}
 
-			echo file_get_contents( $this->_cache->realpath );
-			unlink( $this->_cache->realpath );
+				if ( isset( $this->_cache ) )
+				{
+					header( 'Content-Disposition: filename=' . $this->_cache->basename . ';' );
+					header( 'Content-Type: ' . $this->_cache->mime );
+					header( 'Content-Transfer-Encoding: binary' );
+					header( 'Last-Modified: ' . gmdate( 'D, d M Y H:i:s', time() ) . ' GMT' );
+
+					echo file_get_contents( $this->_cache->realpath );
+					unlink( $this->_cache->realpath );
+
+					return TRUE;
+				}
+			}
+
+			throw new Exception( 'Unable to render image from source' . $this->_source->realpath );
+		}
+
+		public function get_errors()
+		{
+			return $this->_errors;
 		}
 	}
 }
@@ -554,18 +645,10 @@ namespace O2System
 namespace O2System\Image
 {
 
-	use O2System\Glob\Exception\Interfaces as ExceptionInterface;
+	use O2System\Glob\Interfaces\ExceptionInterface;
 
 	class Exception extends ExceptionInterface
 	{
-		public function __construct( $message = NULL, $code = 0 )
-		{
-			// Let PDOException do its normal thing
-			parent::__construct( $message, $code );
-
-			// Register Custom Exception View Path
-			$this->register_view_paths( __DIR__ . '/Views/' );
-		}
 	}
 }
 
@@ -986,7 +1069,7 @@ namespace CodeIgniter
 			$this->dynamic_output = FALSE;
 			$this->quality = 90;
 			$this->create_thumb = FALSE;
-			$this->thumb_marker = '_thumb';
+			$this->thumb_marker = '-thumb';
 			$this->maintain_ratio = TRUE;
 			$this->master_dim = 'auto';
 			$this->wm_type = 'text';
@@ -1057,7 +1140,7 @@ namespace CodeIgniter
 			// Is there a source image? If not, there's no reason to continue
 			if ( $this->source_image === '' )
 			{
-				$this->set_error( 'imglib_source_image_required' );
+				$this->set_error( 'IMAGE_SOURCE_IMAGE_REQUIRED' );
 
 				return FALSE;
 			}
@@ -1070,7 +1153,7 @@ namespace CodeIgniter
 			 */
 			if ( ! function_exists( 'getimagesize' ) )
 			{
-				$this->set_error( 'imglib_gd_required_for_props' );
+				$this->set_error( 'IMAGE_GD_REQUIRED_FOR_PROPERTIES' );
 
 				return FALSE;
 			}
@@ -1278,7 +1361,7 @@ namespace CodeIgniter
 
 			if ( $this->rotation_angle === '' OR ! in_array( $this->rotation_angle, $degs ) )
 			{
-				$this->set_error( 'imglib_rotation_angle_required' );
+				$this->set_error( 'IMAGE_ROTATION_ANGLE_REQUIRED' );
 
 				return FALSE;
 			}
@@ -1426,7 +1509,7 @@ namespace CodeIgniter
 			//  Do we have a vaild library path?
 			if ( $this->library_path === '' )
 			{
-				$this->set_error( 'imglib_libpath_invalid' );
+				$this->set_error( 'IMAGE_LIBRARY_PATH_INVALID' );
 
 				return FALSE;
 			}
@@ -1472,7 +1555,7 @@ namespace CodeIgniter
 			// Did it work?
 			if ( $retval > 0 )
 			{
-				$this->set_error( 'imglib_image_process_failed' );
+				$this->set_error( 'IMAGE_PROCESS_FAILED' );
 
 				return FALSE;
 			}
@@ -1497,7 +1580,7 @@ namespace CodeIgniter
 		{
 			if ( $this->library_path === '' )
 			{
-				$this->set_error( 'imglib_libpath_invalid' );
+				$this->set_error( 'IMAGE_LIBRARY_PATH_INVALID' );
 
 				return FALSE;
 			}
@@ -1563,7 +1646,7 @@ namespace CodeIgniter
 			// Did it work?
 			if ( $retval > 0 )
 			{
-				$this->set_error( 'imglib_image_process_failed' );
+				$this->set_error( 'IMAGE_PROCESS_FAILED' );
 
 				return FALSE;
 			}
@@ -1720,7 +1803,7 @@ namespace CodeIgniter
 		{
 			if ( ! function_exists( 'imagecolortransparent' ) )
 			{
-				$this->set_error( 'imglib_gd_required' );
+				$this->set_error( 'IMAGE_GD_REQUIRED' );
 
 				return FALSE;
 			}
@@ -1842,9 +1925,9 @@ namespace CodeIgniter
 				return FALSE;
 			}
 
-			if ( $this->wm_use_truetype === TRUE && ! file_exists( $this->wm_font_path ) )
+			if ( $this->wm_use_truetype === TRUE && ! is_file( $this->wm_font_path ) )
 			{
-				$this->set_error( 'imglib_missing_font' );
+				$this->set_error( 'IMAGE_MISSING_FONT' );
 
 				return FALSE;
 			}
@@ -2029,7 +2112,7 @@ namespace CodeIgniter
 				case 1 :
 					if ( ! function_exists( 'imagecreatefromgif' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_gif_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_GIF_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
@@ -2038,7 +2121,7 @@ namespace CodeIgniter
 				case 2 :
 					if ( ! function_exists( 'imagecreatefromjpeg' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_jpg_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_JPG_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
@@ -2047,14 +2130,14 @@ namespace CodeIgniter
 				case 3 :
 					if ( ! function_exists( 'imagecreatefrompng' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_png_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_PNG_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
 
 					return imagecreatefrompng( $path );
 				default:
-					$this->set_error( array( 'imglib_unsupported_imagecreate' ) );
+					$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE' ) );
 
 					return FALSE;
 			}
@@ -2079,14 +2162,14 @@ namespace CodeIgniter
 				case 1:
 					if ( ! function_exists( 'imagegif' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_gif_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_GIF_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
 
 					if ( ! @imagegif( $resource, $this->full_dst_path ) )
 					{
-						$this->set_error( 'imglib_save_failed' );
+						$this->set_error( 'IMAGE_SAVE_FAILED' );
 
 						return FALSE;
 					}
@@ -2094,14 +2177,14 @@ namespace CodeIgniter
 				case 2:
 					if ( ! function_exists( 'imagejpeg' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_jpg_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_JPG_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
 
 					if ( ! @imagejpeg( $resource, $this->full_dst_path, $this->quality ) )
 					{
-						$this->set_error( 'imglib_save_failed' );
+						$this->set_error( 'IMAGE_SAVE_FAILED' );
 
 						return FALSE;
 					}
@@ -2109,20 +2192,20 @@ namespace CodeIgniter
 				case 3:
 					if ( ! function_exists( 'imagepng' ) )
 					{
-						$this->set_error( array( 'imglib_unsupported_imagecreate', 'imglib_png_not_supported' ) );
+						$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE', 'IMAGE_PNG_NOT_SUPPORTED' ) );
 
 						return FALSE;
 					}
 
 					if ( ! @imagepng( $resource, $this->full_dst_path ) )
 					{
-						$this->set_error( 'imglib_save_failed' );
+						$this->set_error( 'IMAGE_SAVE_FAILED' );
 
 						return FALSE;
 					}
 					break;
 				default:
-					$this->set_error( array( 'imglib_unsupported_imagecreate' ) );
+					$this->set_error( array( 'IMAGE_UNSUPPORTED_IMAGECREATE' ) );
 
 					return FALSE;
 					break;
@@ -2243,9 +2326,9 @@ namespace CodeIgniter
 				$path = $this->full_src_path;
 			}
 
-			if ( ! file_exists( $path ) )
+			if ( ! is_file( $path ) )
 			{
-				$this->set_error( 'imglib_invalid_path' );
+				$this->set_error( 'IMAGE_INVALID_PATH' );
 
 				return FALSE;
 			}
@@ -2400,24 +2483,58 @@ namespace CodeIgniter
 		 *
 		 * @return    void
 		 */
-		public function set_error( $msg )
+		public function set_error( $errors )
 		{
-			$CI =& get_instance();
-			$CI->lang->load( 'imglib' );
-
-			if ( is_array( $msg ) )
+			if ( class_exists( 'O2System', FALSE ) )
 			{
-				foreach ( $msg as $val )
+				\O2System::$language->load( 'image' );
+
+				if ( is_array( $errors ) )
 				{
-					$msg = ( $CI->lang->line( $val ) === FALSE ) ? $val : $CI->lang->line( $val );
-					$this->error_msg[] = $msg;
-					log_message( 'error', $msg );
+					foreach ( $errors as $error )
+					{
+						$this->error_msg[] = \O2System::$language->line( $error );
+					}
+				}
+				else
+				{
+					$this->error_msg[] = \O2System::$language->line( $errors );
 				}
 			}
 			else
 			{
-				$msg = ( $CI->lang->line( $msg ) === FALSE ) ? $msg : $CI->lang->line( $msg );
-				$this->error_msg[] = $msg;
+				$error_messages = array(
+					'IMAGE_SOURCE_IMAGE_REQUIRED'   => 'You must specify a source image in your preferences.',
+					'IMAGE_GD_REQUIRED'             => 'The GD image library is required for this feature.',
+					'IMAGE_GD_REQUIRED_FOR_PROPS'   => 'Your server must support the GD image library in order to determine the image properties.',
+					'IMAGE_UNSUPPORTED_IMAGECREATE' => 'Your server does not support the GD function required to process this type of image.',
+					'IMAGE_GIF_NOT_SUPPORTED'       => 'GIF images are often not supported due to licensing restrictions.  You may have to use JPG or PNG images instead.',
+					'IMAGE_JPG_NOT_SUPPORTED'       => 'JPG images are not supported.',
+					'IMAGE_PNG_NOT_SUPPORTED'       => 'PNG images are not supported.',
+					'IMAGE_JPG_OR_PNG_REQUIRED'     => 'The image resize protocol specified in your preferences only works with JPEG or PNG image types.',
+					'IMAGE_COPY_ERROR'              => 'An error was encountered while attempting to replace the file.  Please make sure your file directory is writable.',
+					'IMAGE_ROTATE_UNSUPPORTED'      => 'Image rotation does not appear to be supported by your server.',
+					'IMAGE_LIBRARY_PATH_INVALID'    => 'The path to your image library is not correct.  Please set the correct path in your image preferences.',
+					'IMAGE_PROCESS_FAILED'          => 'Image processing failed.  Please verify that your server supports the chosen protocol and that the path to your image library is correct.',
+					'IMAGE_ROTATION_ANGLE_REQUIRED' => 'An angle of rotation is required to rotate the image.',
+					'IMAGE_WRITING_FAILED_GIF'      => 'GIF image.',
+					'IMAGE_INVALID_PATH'            => 'The path to the image is not correct.',
+					'IMAGE_COPY_FAILED'             => 'The image copy routine failed.',
+					'IMAGE_MISSING_FONT'            => 'Unable to find a font to use.',
+					'IMAGE_SAVE_FAILED'             => 'Unable to save the image.  Please make sure the image and file directory are writable.',
+				);
+
+				if ( is_array( $errors ) )
+				{
+					foreach ( $errors as $error )
+					{
+						$this->error_msg[] = $error_messages[ $error ];
+					}
+				}
+				else
+				{
+					$this->error_msg[] = $error_messages[ $errors ];
+				}
 			}
 		}
 
